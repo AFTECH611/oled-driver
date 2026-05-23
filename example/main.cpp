@@ -513,9 +513,9 @@ void gpioThread(std::atomic<bool>& running, EventQueue& eq) {
                 int dtState = dt.Read();
                 
                 if (dtState != currentClk) {
-                    eq.push(Event::ENC_CW);  // Vặn theo chiều kim đồng hồ (Lên)
+                    eq.push(Event::ENC_CCW);  // Vặn theo chiều kim đồng hồ (Lên)
                 } else {
-                    eq.push(Event::ENC_CCW); // Vặn ngược chiều kim đồng hồ (Xuống)
+                    eq.push(Event::ENC_CW); // Vặn ngược chiều kim đồng hồ (Xuống)
                 }
                 
                 // Trì hoãn cực ngắn để ổn định tiếp điểm cơ học của encoder
@@ -658,15 +658,12 @@ static void handleEvent(Event ev, UIContext& ctx, OledDriver& oled) {
 
     // ── SCREEN ──────────────────────────────────────────────────────────
     case UIState::SCREEN:
-        if (ev == Event::ENC_CW) {
-            ctx.screen_idx = (ctx.screen_idx + 1) % 5;
-            ctx.menu_sel   = ctx.screen_idx;
-        } else if (ev == Event::ENC_CCW) {
-            ctx.screen_idx = (ctx.screen_idx + 4) % 5;
-            ctx.menu_sel   = ctx.screen_idx;
-        } else if (ev == Event::BTN_BACK || ev == Event::ENC_PUSH) {
-            ctx.state = UIState::MENU;
+        if (ev == Event::BTN_BACK) {
+            ctx.state = UIState::MENU;          // Back → về menu
+        } else if (ev == Event::ENC_PUSH) {
+            ctx.state = UIState::MENU;          // Push → về menu
         }
+        // ENC_CW / ENC_CCW: không làm gì (hoặc dùng cho scroll nội dung sau)
         break;
 
     default: break;
