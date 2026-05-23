@@ -746,6 +746,9 @@ int main() {
     sd.pushLog("[WARN] Waiting for joint ctrl");
     sd.pushLog("[WARN] Waiting for joint ctrl");
     sd.pushLog("[WARN] Waiting for joint ctrl");
+    sd.pushLog("[WARN] Waiting for joint ctrl");
+    sd.pushLog("[WARN] Waiting for joint ctrl");
+    sd.pushLog("[WARN] Waiting for joint ctrl");
 
     // ── Background threads ───────────────────────────────────────────────
     std::atomic<bool> running{true};
