@@ -327,6 +327,16 @@ static void drawTitle(OledDriver& d, std::string_view title) {
     d.drawHLine(0, 10, 128, true);
 }
 
+// Vẽ thanh cuộn nhỏ bên phải, chỉ hiện khi content > view
+static void drawScrollbar(OledDriver& d, int scroll, int content_h) {
+    constexpr int VIEW_H = 54, TRACK_Y = 10;
+    if (content_h <= VIEW_H) return;
+    int max_s  = content_h - VIEW_H;
+    int bar_h  = std::max(6, VIEW_H * VIEW_H / content_h);
+    int bar_y  = TRACK_Y + scroll * (VIEW_H - bar_h) / max_s;
+    d.fillRect(126, bar_y, 2, bar_h, true);
+}
+
 // ── Screen: MAIN ─────────────────────────────────────────────────────────────
 static void renderMain(OledDriver& d, const DataSnapshot& sd) {
     // Robot name – large centred
@@ -362,6 +372,20 @@ static void renderMenu(OledDriver& d, int sel) {
         } else {
             d.drawString(2, y + 1, kMenuItems[i], true);
         }
+    }
+}
+
+// ── Screen 0: Joint State ────────────────────────────────────────────────────
+static void renderJointState(OledDriver& d, const DataSnapshot& sd) {
+    drawTitle(d, "Joint State");
+    // 6 joints, 2 per row (pos + temp)
+    const auto& J = sd.joints;
+    for (int i = 0; i < static_cast<int>(J.size()) && i < 6; ++i) {
+        int col = i % 2, row = i / 2;
+        int x = col * 64, y = 13 + row * 17;
+        d.drawString(x, y,     J[i].name, true);
+        d.drawString(x, y + 8, std::format("{:.1f}", J[i].pos),  true);
+        d.drawString(x+36, y+8, std::format("{:.0f}C", J[i].temp), true);
     }
 }
 
@@ -610,15 +634,6 @@ static void statsThread(std::atomic<bool>& running, SharedData& sd) {
 // ============================================================================
 //  Display update  –  called on every UI loop iteration
 // ============================================================================
-// Vẽ thanh cuộn nhỏ bên phải, chỉ hiện khi content > view
-static void drawScrollbar(OledDriver& d, int scroll, int content_h) {
-    constexpr int VIEW_H = 54, TRACK_Y = 10;
-    if (content_h <= VIEW_H) return;
-    int max_s  = content_h - VIEW_H;
-    int bar_h  = std::max(6, VIEW_H * VIEW_H / content_h);
-    int bar_y  = TRACK_Y + scroll * (VIEW_H - bar_h) / max_s;
-    d.fillRect(126, bar_y, 2, bar_h, true);
-}
 // renderUI giờ nhận UIContext& (không phải const) để renderer clamp scroll
 static void renderUI(OledDriver& d, UIContext& ctx, const DataSnapshot& sd) {
     d.clear();
@@ -651,35 +666,36 @@ static void handleEvent(Event ev, UIContext& ctx, OledDriver& oled) {
     }
 
     switch (ctx.state) {
-    // ── MAIN ────────────────────────────────────────────────────────────
-    case UIState::MAIN:
-        if (ev == Event::ENC_CW || ev == Event::ENC_CCW || ev == Event::ENC_PUSH) ctx.state = UIState::MENU;
-        if (ev == Event::BTN_BACK) {} // Already at top level
-        break;
+        // ── MAIN ────────────────────────────────────────────────────────────
+        case UIState::MAIN:
+            if (ev == Event::ENC_CW || ev == Event::ENC_CCW || ev == Event::ENC_PUSH) ctx.state = UIState::MENU;
+            if (ev == Event::BTN_BACK) {} // Already at top level
+            break;
 
-    // ── MENU ────────────────────────────────────────────────────────────
-    case UIState::MENU:
-        if (ev == Event::ENC_CW)       { ctx.menu_sel = (ctx.menu_sel + 1) % 5; }
-        else if (ev == Event::ENC_CCW) { ctx.menu_sel = (ctx.menu_sel + 4) % 5; }
-        else if (ev == Event::ENC_PUSH) {
-            ctx.screen_idx    = ctx.menu_sel;
-            ctx.state         = UIState::SCREEN;
-            ctx.scroll_offset = 0;  // ← reset khi vào màn mới
-        }
-        else if (ev == Event::BTN_BACK) { ctx.state = UIState::MAIN; }
-        break;
+        // ── MENU ────────────────────────────────────────────────────────────
+        case UIState::MENU:
+            if (ev == Event::ENC_CW)       { ctx.menu_sel = (ctx.menu_sel + 1) % 5; }
+            else if (ev == Event::ENC_CCW) { ctx.menu_sel = (ctx.menu_sel + 4) % 5; }
+            else if (ev == Event::ENC_PUSH) {
+                ctx.screen_idx    = ctx.menu_sel;
+                ctx.state         = UIState::SCREEN;
+                ctx.scroll_offset = 0;  // ← reset khi vào màn mới
+            }
+            else if (ev == Event::BTN_BACK) { ctx.state = UIState::MAIN; }
+            break;
 
-    // ── SCREEN ──────────────────────────────────────────────────────────
-    case UIState::SCREEN:
-        if (ev == Event::ENC_CW) {
-            ctx.scroll_offset += 8;              // renderer sẽ clamp max
-        } else if (ev == Event::ENC_CCW) {
-            ctx.scroll_offset = std::max(0, ctx.scroll_offset - 8);
-        } else if (ev == Event::BTN_BACK || ev == Event::ENC_PUSH) {
-            ctx.state         = UIState::MENU;
-            ctx.scroll_offset = 0;
-        }
-        break;
+        // ── SCREEN ──────────────────────────────────────────────────────────
+        case UIState::SCREEN:
+            if (ev == Event::ENC_CW) {
+                ctx.scroll_offset += 8;              // renderer sẽ clamp max
+            } else if (ev == Event::ENC_CCW) {
+                ctx.scroll_offset = std::max(0, ctx.scroll_offset - 8);
+            } else if (ev == Event::BTN_BACK || ev == Event::ENC_PUSH) {
+                ctx.state         = UIState::MENU;
+                ctx.scroll_offset = 0;
+            }
+            break;
+    }
 }
 
 // ============================================================================
