@@ -348,7 +348,7 @@ static void drawTitle(OledDriver& d, std::string_view title) {
 }
 
 // ── Screen: MAIN ─────────────────────────────────────────────────────────────
-static void renderMain(OledDriver& d, const SharedData& sd) {
+static void renderMain(OledDriver& d, const DataSnapshot& sd) {
     // Robot name – large centred
     auto name = sd.robot_name;
     // Split at " By " for 2 lines
@@ -386,7 +386,7 @@ static void renderMenu(OledDriver& d, int sel) {
 }
 
 // ── Screen 0: Joint State ────────────────────────────────────────────────────
-static void renderJointState(OledDriver& d, const SharedData& sd) {
+static void renderJointState(OledDriver& d, const DataSnapshot& sd) {
     drawTitle(d, "Joint State");
     // 6 joints, 2 per row (pos + temp)
     const auto& J = sd.joints;
@@ -400,7 +400,7 @@ static void renderJointState(OledDriver& d, const SharedData& sd) {
 }
 
 // ── Screen 1: IMU State ──────────────────────────────────────────────────────
-static void renderIMU(OledDriver& d, const SharedData& sd) {
+static void renderIMU(OledDriver& d, const DataSnapshot& sd) {
     drawTitle(d, "IMU State");
 
     // Left half: numeric values
@@ -425,7 +425,7 @@ static void renderIMU(OledDriver& d, const SharedData& sd) {
 }
 
 // ── Screen 2: Joystick State ──────────────────────────────────────────────────
-static void renderJoystick(OledDriver& d, const SharedData& sd) {
+static void renderJoystick(OledDriver& d, const DataSnapshot& sd) {
     drawTitle(d, "Joystick");
 
     auto drawStick = [&](int cx, int cy, int r, float vx, float vy,
@@ -462,7 +462,7 @@ static void renderJoystick(OledDriver& d, const SharedData& sd) {
 }
 
 // ── Screen 3: AimRT Log ──────────────────────────────────────────────────────
-static void renderLog(OledDriver& d, const SharedData& sd) {
+static void renderLog(OledDriver& d, const DataSnapshot& sd) {
     drawTitle(d, "AimRT Log");
     constexpr int kMaxRows = 6;
     constexpr int kCharsPerRow = 21; // 128/6 = 21.3
@@ -478,7 +478,7 @@ static void renderLog(OledDriver& d, const SharedData& sd) {
 }
 
 // ── Screen 4: SBC Status ─────────────────────────────────────────────────────
-static void renderSBC(OledDriver& d, const SharedData& sd) {
+static void renderSBC(OledDriver& d, const DataSnapshot& sd) {
     drawTitle(d, "SBC Status");
 
     // CPU cores in 2 columns (up to 8 cores)
@@ -611,7 +611,7 @@ static void statsThread(std::atomic<bool>& running, SharedData& sd) {
 // ============================================================================
 //  Display update  –  called on every UI loop iteration
 // ============================================================================
-static void renderUI(OledDriver& d, const UIContext& ctx, const SharedData& sd) {
+static void renderUI(OledDriver& d, const UIContext& ctx, const DataSnapshot& sd) {
     d.clear();
 
     if (ctx.state == UIState::SLEEPING) {
@@ -764,11 +764,7 @@ int main() {
 
         // ── Render ───────────────────────────────────────────────────────
         if (ctx.state != UIState::SLEEPING) {
-            SharedData snap;
-            {
-                std::lock_guard lock(sd.mtx);
-                snap = sd;  // shallow copy (fine for POD + vectors)
-            }
+            DataSnapshot snap = sd.snapshot();
             renderUI(oled, ctx, snap);
         }
     }
