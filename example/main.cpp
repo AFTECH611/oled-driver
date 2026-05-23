@@ -306,6 +306,7 @@ struct UIContext {
     UIState state      = UIState::SLEEPING;
     int     menu_sel   = 0;   // cursor in MENU (0–4)
     int     screen_idx = 0;   // active screen (0–4)
+    int     scroll_offset = 0;   // ← NEW
     std::chrono::steady_clock::time_point last_active = std::chrono::steady_clock::now();
 
     void touch() { last_active = std::chrono::steady_clock::now(); }
@@ -364,127 +365,141 @@ static void renderMenu(OledDriver& d, int sel) {
     }
 }
 
-// ── Screen 0: Joint State ────────────────────────────────────────────────────
-static void renderJointState(OledDriver& d, const DataSnapshot& sd) {
-    drawTitle(d, "Joint State");
-    // 6 joints, 2 per row (pos + temp)
-    const auto& J = sd.joints;
-    for (int i = 0; i < static_cast<int>(J.size()) && i < 6; ++i) {
-        int col = i % 2, row = i / 2;
-        int x = col * 64, y = 13 + row * 17;
-        d.drawString(x, y,     J[i].name, true);
-        d.drawString(x, y + 8, std::format("{:.1f}", J[i].pos),  true);
-        d.drawString(x+36, y+8, std::format("{:.0f}C", J[i].temp), true);
-    }
-}
-
-// ── Screen 1: IMU State ──────────────────────────────────────────────────────
-static void renderIMU(OledDriver& d, const DataSnapshot& sd) {
+// ── Screen 1: IMU ────────────────────────────────────────────────────────
+static void renderIMU(OledDriver& d, const DataSnapshot& sd, int& scroll) {
     drawTitle(d, "IMU State");
+    // 6 dòng × 10px = 60px, view = 54px → max_scroll = 6
+    constexpr int CONTENT_H = 60;
+    scroll = std::clamp(scroll, 0, std::max(0, CONTENT_H - 54));
 
-    // Left half: numeric values
-    d.drawString(0, 12, std::format("Gx{:+6.1f}", sd.imu_gx), true);
-    d.drawString(0, 22, std::format("Gy{:+6.1f}", sd.imu_gy), true);
-    d.drawString(0, 32, std::format("Gz{:+6.1f}", sd.imu_gz), true);
-    d.drawString(0, 42, std::format("Ax{:+5.2f}", sd.imu_ax), true);
-    d.drawString(0, 52, std::format("Ay{:+5.2f}", sd.imu_ay), true);
-
-    // Right half: tilt dot (circle + dot)
-    constexpr int CX = 100, CY = 38, R = 22;
+    const std::pair<int, std::string> rows[] = {
+        {12, std::format("Gx{:+6.1f}", sd.imu_gx)},
+        {22, std::format("Gy{:+6.1f}", sd.imu_gy)},
+        {32, std::format("Gz{:+6.1f}", sd.imu_gz)},
+        {42, std::format("Ax{:+5.2f}", sd.imu_ax)},
+        {52, std::format("Ay{:+5.2f}", sd.imu_ay)},
+        {62, std::format("Az{:+5.2f}", sd.imu_az)},  // Az bây giờ hiện được khi scroll
+    };
+    for (auto& [y, text] : rows) {
+        int sy = y - scroll;
+        if (sy >= 10 && sy < 64) d.drawString(0, sy, text, true);
+    }
+    // Tilt dot cố định (không scroll)
+    constexpr int CX=100, CY=38, R=22;
     d.drawCircle(CX, CY, R, true);
-    d.drawHLine(CX - R, CY, 2*R+1, true);   // crosshair
-    d.drawVLine(CX, CY - R, 2*R+1, true);
-
-    // Dot position from normalised gx/gy (clamp to ±90 deg range)
+    d.drawHLine(CX-R, CY, 2*R+1, true);
+    d.drawVLine(CX, CY-R, 2*R+1, true);
     float nx = std::clamp(sd.imu_gy / 90.f, -1.f, 1.f);
     float ny = std::clamp(sd.imu_gx / 90.f, -1.f, 1.f);
-    int dx = CX + static_cast<int>(nx * (R - 3));
-    int dy = CY + static_cast<int>(ny * (R - 3));
-    d.fillCircle(dx, dy, 3, true);
+    d.fillCircle(CX + (int)(nx*(R-3)), CY + (int)(ny*(R-3)), 3, true);
+    drawScrollbar(d, scroll, CONTENT_H);
 }
 
-// ── Screen 2: Joystick State ──────────────────────────────────────────────────
+// Screen 2: Joy-stick
 static void renderJoystick(OledDriver& d, const DataSnapshot& sd) {
     drawTitle(d, "Joystick");
+    // bit map: A=0, B=1, X=2, Y=3, LB=4, RB=5, St=6, Bk=7
+    auto btn = [&](int bit) { return (sd.joy_buttons >> bit) & 1u; };
 
-    auto drawStick = [&](int cx, int cy, int r, float vx, float vy,
-                         std::string_view label) {
-        d.drawCircle(cx, cy, r, true);
-        d.drawHLine(cx - r, cy, 2*r+1, true);
-        d.drawVLine(cx, cy - r, 2*r+1, true);
-        d.drawString(cx - d.textWidth(label)/2, cy + r + 2, label, true);
-        int px = cx + static_cast<int>(vx * (r - 2));
-        int py = cy + static_cast<int>(vy * (r - 2));
-        d.fillCircle(px, py, 3, true);
-        // Axis labels
-        d.drawString(cx - r - 2, cy + r + 10,
-                     std::format("{:.1f}", vx), true);
-    };
-
-    drawStick(28, 37, 20, sd.joy_lx, sd.joy_ly, "L");
-    drawStick(100, 37, 20, sd.joy_rx, sd.joy_ry, "R");
-
-    // Button states – bottom row
-    constexpr std::array<const char*, 8> kBtnNames = {
-        "A","B","X","Y","LB","RB","St","Bk"
-    };
-    for (int i = 0; i < 8; ++i) {
-        bool pressed = (sd.joy_buttons >> i) & 1u;
-        int  bx = i * 16, by = 56;
+    // Vẽ nút: tô nền trắng + chữ đen khi nhấn, ngược lại khi thả
+    auto drawBtn = [&](int x, int y, const char* label, bool pressed) {
+        int w = d.textWidth(label) + 2;
         if (pressed) {
-            d.fillRect(bx, by, 14, 8, true);
-            d.drawString(bx+1, by, kBtnNames[i], false);
+            d.fillRect(x-1, y-1, w, 9, true);
+            d.drawString(x, y, label, false);
         } else {
-            d.drawString(bx+1, by, kBtnNames[i], true);
+            d.drawString(x, y, label, true);
         }
-    }
+    };
+
+    // ── Hàng trên: LB | Bk | St | RB ──────────────────────────────────
+    drawBtn(1,   12, "LB", btn(4));
+    drawBtn(43,  12, "Bk", btn(7));
+    drawBtn(69,  12, "St", btn(6));
+    drawBtn(114, 12, "RB", btn(5));
+
+    // ── Left Stick (lớn, dominant) ─────────────────────────────────────
+    constexpr int LX=22, LY=32, LR=14;
+    d.drawCircle(LX, LY, LR, true);
+    d.drawHLine(LX-LR, LY, 2*LR+1, true);
+    d.drawVLine(LX, LY-LR, 2*LR+1, true);
+    d.fillCircle(LX + (int)(sd.joy_lx*(LR-3)),
+                 LY + (int)(sd.joy_ly*(LR-3)), 3, true);
+
+    // ── Right Stick (nhỏ hơn) ──────────────────────────────────────────
+    constexpr int RX=82, RY=22, RR=8;
+    d.drawCircle(RX, RY, RR, true);
+    d.drawHLine(RX-RR, RY, 2*RR+1, true);
+    d.drawVLine(RX, RY-RR, 2*RR+1, true);
+    d.fillCircle(RX + (int)(sd.joy_rx*(RR-2)),
+                 RY + (int)(sd.joy_ry*(RR-2)), 2, true);  // dot nhỏ hơn
+
+    // ── ABXY Diamond (bên phải, dưới R-stick) ──────────────────────────
+    //      Y(3)
+    //   X(2)  B(1)
+    //      A(0)
+    drawBtn(107, 28, "Y", btn(3));  // top
+    drawBtn(96,  37, "X", btn(2));  // left
+    drawBtn(116, 37, "B", btn(1));  // right
+    drawBtn(107, 46, "A", btn(0));  // bottom
+
+    // ── Giá trị analog ─────────────────────────────────────────────────
+    d.drawString(0,  56, std::format("L{:+.1f} {:+.1f}", sd.joy_lx, sd.joy_ly), true);
+    d.drawString(66, 56, std::format("R{:+.1f} {:+.1f}", sd.joy_rx, sd.joy_ry), true);
 }
 
-// ── Screen 3: AimRT Log ──────────────────────────────────────────────────────
-static void renderLog(OledDriver& d, const DataSnapshot& sd) {
+// ── Screen 3: Log ────────────────────────────────────────────────────────
+static void renderLog(OledDriver& d, const DataSnapshot& sd, int& scroll) {
     drawTitle(d, "AimRT Log");
-    constexpr int kMaxRows = 6;
-    constexpr int kCharsPerRow = 21; // 128/6 = 21.3
-
+    constexpr int kRowH = 9, kVisRows = 6, kChars = 21;
     const auto& lines = sd.log_lines;
-    int start = static_cast<int>(lines.size()) - kMaxRows;
-    if (start < 0) start = 0;
-    for (int i = 0; i < kMaxRows && (start + i) < static_cast<int>(lines.size()); ++i) {
-        std::string row = lines[start + i];
-        if (row.size() > kCharsPerRow) row.resize(kCharsPerRow);
-        d.drawString(0, 12 + i * 9, row, true);
+    int total     = (int)lines.size();
+    int max_scroll = std::max(0, total - kVisRows);
+    scroll = std::clamp(scroll, 0, max_scroll);
+
+    // scroll=0 → log mới nhất, scroll tăng → xem lùi về trước
+    int start = std::max(0, total - kVisRows - scroll);
+    for (int i = 0; i < kVisRows && (start+i) < total; ++i) {
+        std::string row = lines[start+i];
+        if ((int)row.size() > kChars) row.resize(kChars);
+        d.drawString(0, 12 + i*kRowH, row, true);
+    }
+    if (total > kVisRows) {
+        int bar_h = std::max(6, kVisRows * 54 / total);
+        int bar_y = 10 + (max_scroll > 0 ? scroll * (54 - bar_h) / max_scroll : 0);
+        d.fillRect(126, bar_y, 2, bar_h, true);
     }
 }
 
-// ── Screen 4: SBC Status ─────────────────────────────────────────────────────
-static void renderSBC(OledDriver& d, const DataSnapshot& sd) {
+// ── Screen 4: SBC ────────────────────────────────────────────────────────
+static void renderSBC(OledDriver& d, const DataSnapshot& sd, int& scroll) {
     drawTitle(d, "SBC Status");
+    constexpr int CONTENT_H = 58;
+    scroll = std::clamp(scroll, 0, std::max(0, CONTENT_H - 54));
 
-    // CPU cores in 2 columns (up to 8 cores)
-    const int ncores = static_cast<int>(sd.cpu_core_pct.size());
-    constexpr int BAR_W = 48, BAR_H = 5;
+    const int ncores = (int)sd.cpu_core_pct.size();
     for (int i = 0; i < ncores && i < 8; ++i) {
-        int col = i / 4, row = i % 4;
-        int x = col * 64, y = 13 + row * 8;
+        int x = (i / 4) * 64;
+        int y = 13 + (i % 4) * 8 - scroll;
+        if (y < 10 || y > 63) continue;
         char lbl[4]; std::snprintf(lbl, sizeof(lbl), "C%d", i);
         d.drawString(x, y, lbl, true);
-        int pct = static_cast<int>(sd.cpu_core_pct[i]);
-        d.drawBar(x + 12, y, BAR_W, BAR_H, pct, true);
+        d.drawBar(x+12, y, 48, 5, (int)sd.cpu_core_pct[i], true);
     }
-
-    // Temp + RAM on last row
-    int y_bot = 13 + 4 * 8; // y=45
-    d.drawString(0,  y_bot, std::format("T:{:.0f}C", sd.cpu_temp_c), true);
-
-    uint64_t used_kb  = sd.ram_total_kb > sd.ram_avail_kb
-                      ? sd.ram_total_kb - sd.ram_avail_kb : 0;
-    float used_gb  = used_kb  / (1024.f * 1024.f);
-    float total_gb = sd.ram_total_kb / (1024.f * 1024.f);
-    d.drawString(48, y_bot, std::format("RAM{:.1f}/{:.0f}G", used_gb, total_gb), true);
-
-    int ram_pct = sd.ram_total_kb
-                ? static_cast<int>(100.f * used_kb / sd.ram_total_kb) : 0;
-    d.drawBar(0, y_bot + 9, 128, 5, ram_pct, true);
+    int y_bot = 45 - scroll;
+    if (y_bot >= 10 && y_bot < 64) {
+        d.drawString(0, y_bot, std::format("T:{:.0f}C", sd.cpu_temp_c), true);
+        uint64_t used_kb = sd.ram_total_kb > sd.ram_avail_kb
+                         ? sd.ram_total_kb - sd.ram_avail_kb : 0;
+        d.drawString(48, y_bot, std::format("RAM{:.1f}/{:.0f}G",
+            used_kb / (1024.f*1024.f), sd.ram_total_kb / (1024.f*1024.f)), true);
+    }
+    if (y_bot + 9 >= 10 && y_bot + 9 < 64) {
+        int pct = sd.ram_total_kb
+                ? (int)(100.f * (sd.ram_total_kb - sd.ram_avail_kb) / sd.ram_total_kb) : 0;
+        d.drawBar(0, y_bot+9, 128, 5, pct, true);
+    }
+    drawScrollbar(d, scroll, CONTENT_H);
 }
 
 // ============================================================================
@@ -595,29 +610,30 @@ static void statsThread(std::atomic<bool>& running, SharedData& sd) {
 // ============================================================================
 //  Display update  –  called on every UI loop iteration
 // ============================================================================
-static void renderUI(OledDriver& d, const UIContext& ctx, const DataSnapshot& sd) {
+// Vẽ thanh cuộn nhỏ bên phải, chỉ hiện khi content > view
+static void drawScrollbar(OledDriver& d, int scroll, int content_h) {
+    constexpr int VIEW_H = 54, TRACK_Y = 10;
+    if (content_h <= VIEW_H) return;
+    int max_s  = content_h - VIEW_H;
+    int bar_h  = std::max(6, VIEW_H * VIEW_H / content_h);
+    int bar_y  = TRACK_Y + scroll * (VIEW_H - bar_h) / max_s;
+    d.fillRect(126, bar_y, 2, bar_h, true);
+}
+// renderUI giờ nhận UIContext& (không phải const) để renderer clamp scroll
+static void renderUI(OledDriver& d, UIContext& ctx, const DataSnapshot& sd) {
     d.clear();
-
-    if (ctx.state == UIState::SLEEPING) {
-        // Nothing to draw – display is asleep
-    }
-    else if (ctx.state == UIState::MAIN) {
-        renderMain(d, sd);
-    }
-    else if (ctx.state == UIState::MENU) {
-        renderMenu(d, ctx.menu_sel);
-    }
-    else { // UIState::SCREEN
+    if      (ctx.state == UIState::SLEEPING) { /* nothing */ }
+    else if (ctx.state == UIState::MAIN)     renderMain(d, sd);
+    else if (ctx.state == UIState::MENU)     renderMenu(d, ctx.menu_sel);
+    else {
         switch (ctx.screen_idx) {
-            case 0: renderJointState(d, sd); break;
-            case 1: renderIMU(d, sd);        break;
-            case 2: renderJoystick(d, sd);   break;
-            case 3: renderLog(d, sd);        break;
-            case 4: renderSBC(d, sd);        break;
-            default: break;
+            case 0: renderJointState(d, sd, ctx.scroll_offset); break;
+            case 1: renderIMU       (d, sd, ctx.scroll_offset); break;
+            case 2: renderJoystick  (d, sd);                    break;  // không scroll
+            case 3: renderLog       (d, sd, ctx.scroll_offset); break;
+            case 4: renderSBC       (d, sd, ctx.scroll_offset); break;
         }
     }
-
     d.display();
 }
 
@@ -643,30 +659,27 @@ static void handleEvent(Event ev, UIContext& ctx, OledDriver& oled) {
 
     // ── MENU ────────────────────────────────────────────────────────────
     case UIState::MENU:
-        if (ev == Event::ENC_CW) {
-            ctx.menu_sel = (ctx.menu_sel + 1) % 5;
-        } else if (ev == Event::ENC_CCW) {
-            ctx.menu_sel = (ctx.menu_sel + 4) % 5;
-        } else if (ev == Event::ENC_PUSH) {
-            ctx.screen_idx = ctx.menu_sel;
-            ctx.state = UIState::SCREEN;
-        } else if (ev == Event::BTN_BACK) {
-            ctx.state = UIState::MAIN;
+        if (ev == Event::ENC_CW)       { ctx.menu_sel = (ctx.menu_sel + 1) % 5; }
+        else if (ev == Event::ENC_CCW) { ctx.menu_sel = (ctx.menu_sel + 4) % 5; }
+        else if (ev == Event::ENC_PUSH) {
+            ctx.screen_idx    = ctx.menu_sel;
+            ctx.state         = UIState::SCREEN;
+            ctx.scroll_offset = 0;  // ← reset khi vào màn mới
         }
+        else if (ev == Event::BTN_BACK) { ctx.state = UIState::MAIN; }
         break;
 
     // ── SCREEN ──────────────────────────────────────────────────────────
     case UIState::SCREEN:
-        if (ev == Event::BTN_BACK) {
-            ctx.state = UIState::MENU;          // Back → về menu
-        } else if (ev == Event::ENC_PUSH) {
-            ctx.state = UIState::MENU;          // Push → về menu
+        if (ev == Event::ENC_CW) {
+            ctx.scroll_offset += 8;              // renderer sẽ clamp max
+        } else if (ev == Event::ENC_CCW) {
+            ctx.scroll_offset = std::max(0, ctx.scroll_offset - 8);
+        } else if (ev == Event::BTN_BACK || ev == Event::ENC_PUSH) {
+            ctx.state         = UIState::MENU;
+            ctx.scroll_offset = 0;
         }
-        // ENC_CW / ENC_CCW: không làm gì (hoặc dùng cho scroll nội dung sau)
         break;
-
-    default: break;
-    }
 }
 
 // ============================================================================
