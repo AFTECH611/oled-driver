@@ -57,6 +57,7 @@ using namespace std::chrono_literals;
 // ============================================================================
 static constexpr const char* kI2CDev    = "/dev/i2c-7";
 static constexpr uint8_t     kOledAddr  = 0x3C;
+static constexpr auto kSleepTimeout = 30s;
 
 
 struct GpioPin {
@@ -535,7 +536,7 @@ void gpioThread(std::atomic<bool>& running, EventQueue& eq) {
             int backState = back.Read();
             if (backState != lastBack) {
                 if (backState == 0) { // Trạng thái nhấn xuống (LOW)
-                    eq.push(Event::BACK); // Đẩy sự kiện BACK vào hàng đợi
+                    eq.push(Event::BTN_BACK); // Đẩy sự kiện BACK vào hàng đợi
                     std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 }
                 lastBack = backState;
