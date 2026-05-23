@@ -280,9 +280,10 @@ static float readCpuTemp() {
 
 static void readRamInfo(uint64_t& total_kb, uint64_t& avail_kb) {
     std::ifstream f("/proc/meminfo");
-    std::string key; uint64_t val;
+    std::string key, unit;   // ← thêm unit
+    uint64_t val;
     total_kb = avail_kb = 0;
-    while (f >> key >> val) {
+    while (f >> key >> val >> unit) {   // ← đọc đủ 3 field
         if (key == "MemTotal:")     total_kb = val;
         if (key == "MemAvailable:") avail_kb = val;
     }
