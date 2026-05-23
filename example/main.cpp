@@ -164,6 +164,12 @@ public:
         return e;
     }
 
+    void clear() {
+        std::lock_guard lock(mtx_);
+        std::queue<Event> empty;
+        std::swap(q_, empty);
+    }
+
 private:
     std::queue<Event>       q_;
     std::mutex              mtx_;
@@ -552,7 +558,7 @@ static void gpioThread(std::atomic<bool>& running, EventQueue& eq) {
         if (pfds[0].revents & POLLIN) {
             uint32_t id = enc_clk.readEvent();
             if (id == GPIO_V2_LINE_EVENT_FALLING_EDGE &&
-                now - lastEnc > 5ms) {
+                now - lastEnc > 40ms) {
                 lastEnc = now;
                 bool dt = enc_dt.getValue();
                 // DT high when CLK falls → CW, else CCW
@@ -751,7 +757,9 @@ int main() {
         auto ev_opt = eq.pop(200ms);
 
         if (ev_opt) {
+            bool was_sleeping = (ctx.state == UIState::SLEEPING);
             handleEvent(*ev_opt, ctx, oled);
+            if (was_sleeping) eq.clear();
         }
 
         // ── Auto-sleep check ─────────────────────────────────────────────
