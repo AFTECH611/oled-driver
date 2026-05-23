@@ -375,18 +375,22 @@ static void renderMenu(OledDriver& d, int sel) {
     }
 }
 
-// ── Screen 0: Joint State ────────────────────────────────────────────────────
-static void renderJointState(OledDriver& d, const DataSnapshot& sd) {
+// ── Screen 0: Joint State ────────────────────────────────────────────────
+static void renderJointState(OledDriver& d, const DataSnapshot& sd, int& scroll) {
     drawTitle(d, "Joint State");
-    // 6 joints, 2 per row (pos + temp)
     const auto& J = sd.joints;
-    for (int i = 0; i < static_cast<int>(J.size()) && i < 6; ++i) {
-        int col = i % 2, row = i / 2;
-        int x = col * 64, y = 13 + row * 17;
-        d.drawString(x, y,     J[i].name, true);
-        d.drawString(x, y + 8, std::format("{:.1f}", J[i].pos),  true);
+    int content_h = ((int(J.size()) + 1) / 2) * 17;
+    scroll = std::clamp(scroll, 0, std::max(0, content_h - 54));
+
+    for (int i = 0; i < (int)J.size() && i < 12; ++i) {
+        int x = (i % 2) * 64;
+        int y = 13 + (i / 2) * 17 - scroll;
+        if (y + 16 < 10 || y > 63) continue;
+        d.drawString(x,    y,   J[i].name, true);
+        d.drawString(x,    y+8, std::format("{:.1f}", J[i].pos),   true);
         d.drawString(x+36, y+8, std::format("{:.0f}C", J[i].temp), true);
     }
+    drawScrollbar(d, scroll, content_h);
 }
 
 // ── Screen 1: IMU ────────────────────────────────────────────────────────
@@ -417,59 +421,6 @@ static void renderIMU(OledDriver& d, const DataSnapshot& sd, int& scroll) {
     float ny = std::clamp(sd.imu_gx / 90.f, -1.f, 1.f);
     d.fillCircle(CX + (int)(nx*(R-3)), CY + (int)(ny*(R-3)), 3, true);
     drawScrollbar(d, scroll, CONTENT_H);
-}
-
-// Screen 2: Joy-stick
-static void renderJoystick(OledDriver& d, const DataSnapshot& sd) {
-    drawTitle(d, "Joystick");
-    // bit map: A=0, B=1, X=2, Y=3, LB=4, RB=5, St=6, Bk=7
-    auto btn = [&](int bit) { return (sd.joy_buttons >> bit) & 1u; };
-
-    // Vẽ nút: tô nền trắng + chữ đen khi nhấn, ngược lại khi thả
-    auto drawBtn = [&](int x, int y, const char* label, bool pressed) {
-        int w = d.textWidth(label) + 2;
-        if (pressed) {
-            d.fillRect(x-1, y-1, w, 9, true);
-            d.drawString(x, y, label, false);
-        } else {
-            d.drawString(x, y, label, true);
-        }
-    };
-
-    // ── Hàng trên: LB | Bk | St | RB ──────────────────────────────────
-    drawBtn(1,   12, "LB", btn(4));
-    drawBtn(43,  12, "Bk", btn(7));
-    drawBtn(69,  12, "St", btn(6));
-    drawBtn(114, 12, "RB", btn(5));
-
-    // ── Left Stick (lớn, dominant) ─────────────────────────────────────
-    constexpr int LX=22, LY=32, LR=14;
-    d.drawCircle(LX, LY, LR, true);
-    d.drawHLine(LX-LR, LY, 2*LR+1, true);
-    d.drawVLine(LX, LY-LR, 2*LR+1, true);
-    d.fillCircle(LX + (int)(sd.joy_lx*(LR-3)),
-                 LY + (int)(sd.joy_ly*(LR-3)), 3, true);
-
-    // ── Right Stick (nhỏ hơn) ──────────────────────────────────────────
-    constexpr int RX=82, RY=22, RR=8;
-    d.drawCircle(RX, RY, RR, true);
-    d.drawHLine(RX-RR, RY, 2*RR+1, true);
-    d.drawVLine(RX, RY-RR, 2*RR+1, true);
-    d.fillCircle(RX + (int)(sd.joy_rx*(RR-2)),
-                 RY + (int)(sd.joy_ry*(RR-2)), 2, true);  // dot nhỏ hơn
-
-    // ── ABXY Diamond (bên phải, dưới R-stick) ──────────────────────────
-    //      Y(3)
-    //   X(2)  B(1)
-    //      A(0)
-    drawBtn(107, 28, "Y", btn(3));  // top
-    drawBtn(96,  37, "X", btn(2));  // left
-    drawBtn(116, 37, "B", btn(1));  // right
-    drawBtn(107, 46, "A", btn(0));  // bottom
-
-    // ── Giá trị analog ─────────────────────────────────────────────────
-    d.drawString(0,  56, std::format("L{:+.1f} {:+.1f}", sd.joy_lx, sd.joy_ly), true);
-    d.drawString(66, 56, std::format("R{:+.1f} {:+.1f}", sd.joy_rx, sd.joy_ry), true);
 }
 
 // ── Screen 3: Log ────────────────────────────────────────────────────────
@@ -524,6 +475,59 @@ static void renderSBC(OledDriver& d, const DataSnapshot& sd, int& scroll) {
         d.drawBar(0, y_bot+9, 128, 5, pct, true);
     }
     drawScrollbar(d, scroll, CONTENT_H);
+}
+
+// ── Screen 2: Joy-stick ────────────────────────────────────────────────────────
+static void renderJoystick(OledDriver& d, const DataSnapshot& sd) {
+    drawTitle(d, "Joystick");
+    // bit map: A=0, B=1, X=2, Y=3, LB=4, RB=5, St=6, Bk=7
+    auto btn = [&](int bit) { return (sd.joy_buttons >> bit) & 1u; };
+
+    // Vẽ nút: tô nền trắng + chữ đen khi nhấn, ngược lại khi thả
+    auto drawBtn = [&](int x, int y, const char* label, bool pressed) {
+        int w = d.textWidth(label) + 2;
+        if (pressed) {
+            d.fillRect(x-1, y-1, w, 9, true);
+            d.drawString(x, y, label, false);
+        } else {
+            d.drawString(x, y, label, true);
+        }
+    };
+
+    // ── Hàng trên: LB | Bk | St | RB ──────────────────────────────────
+    drawBtn(1,   12, "LB", btn(4));
+    drawBtn(43,  12, "Bk", btn(7));
+    drawBtn(69,  12, "St", btn(6));
+    drawBtn(114, 12, "RB", btn(5));
+
+    // ── Left Stick (lớn, dominant) ─────────────────────────────────────
+    constexpr int LX=22, LY=32, LR=14;
+    d.drawCircle(LX, LY, LR, true);
+    d.drawHLine(LX-LR, LY, 2*LR+1, true);
+    d.drawVLine(LX, LY-LR, 2*LR+1, true);
+    d.fillCircle(LX + (int)(sd.joy_lx*(LR-3)),
+                 LY + (int)(sd.joy_ly*(LR-3)), 3, true);
+
+    // ── Right Stick (nhỏ hơn) ──────────────────────────────────────────
+    constexpr int RX=82, RY=22, RR=8;
+    d.drawCircle(RX, RY, RR, true);
+    d.drawHLine(RX-RR, RY, 2*RR+1, true);
+    d.drawVLine(RX, RY-RR, 2*RR+1, true);
+    d.fillCircle(RX + (int)(sd.joy_rx*(RR-2)),
+                 RY + (int)(sd.joy_ry*(RR-2)), 2, true);  // dot nhỏ hơn
+
+    // ── ABXY Diamond (bên phải, dưới R-stick) ──────────────────────────
+    //      Y(3)
+    //   X(2)  B(1)
+    //      A(0)
+    drawBtn(107, 28, "Y", btn(3));  // top
+    drawBtn(96,  37, "X", btn(2));  // left
+    drawBtn(116, 37, "B", btn(1));  // right
+    drawBtn(107, 46, "A", btn(0));  // bottom
+
+    // ── Giá trị analog ─────────────────────────────────────────────────
+    d.drawString(0,  56, std::format("L{:+.1f} {:+.1f}", sd.joy_lx, sd.joy_ly), true);
+    d.drawString(66, 56, std::format("R{:+.1f} {:+.1f}", sd.joy_rx, sd.joy_ry), true);
 }
 
 // ============================================================================
