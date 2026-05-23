@@ -724,10 +724,12 @@ int main() {
             {"LAnk",-0.08f, 39.5f}, {"RAnk", -0.07f, 39.8f},
         };
         sd.imu_gx = 2.3f; sd.imu_gy = -1.1f; sd.imu_gz = 0.4f;
-        sd.pushLog("[INFO] AimRT started");
-        sd.pushLog("[INFO] Robot: MyBipedal");
-        sd.pushLog("[WARN] Waiting for joint ctrl");
-    }
+    } // <--- CLOSE THE LOCK SCOPE HERE
+
+    // Call pushLog outside the lock, so it can safely lock the mutex itself
+    sd.pushLog("[INFO] AimRT started");
+    sd.pushLog("[INFO] Robot: MyBipedal");
+    sd.pushLog("[WARN] Waiting for joint ctrl");
 
     // ── Background threads ───────────────────────────────────────────────
     std::atomic<bool> running{true};
