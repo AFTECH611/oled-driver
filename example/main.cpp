@@ -48,6 +48,8 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <gpiod.h> // Thêm thư viện này ở đầu file
+
 using namespace std::chrono_literals;
 
 // ============================================================================
@@ -56,87 +58,50 @@ using namespace std::chrono_literals;
 static constexpr const char* kI2CDev    = "/dev/i2c-7";
 static constexpr uint8_t     kOledAddr  = 0x3C;
 
-struct PinDef { const char* chip; uint32_t offset; };
-static constexpr PinDef kPinEncA   { "/dev/gpiochip3", 13 }; // CLK
-static constexpr PinDef kPinEncB   { "/dev/gpiochip3", 15 }; // DT
-static constexpr PinDef kPinEncBtn { "/dev/gpiochip3", 16 }; // SW
-static constexpr PinDef kPinBack   { "/dev/gpiochip4", 20 }; // Back
 
-static constexpr auto kSleepTimeout = 30s;
+struct GpioPin {
+    const char* chip;
+    unsigned int line;
+};
 
-// ============================================================================
-//  GPIO helper  (Linux GPIO chardev v2 – kernel ≥ 5.10)
-// ============================================================================
-class GpioLine {
+// Định nghĩa lại danh sách chân theo phần cứng của Radxa 5B+
+inline constexpr GpioPin kPinClk   { "/dev/gpiochip3", 13 }; // CLK (A)
+inline constexpr GpioPin kPinDt    { "/dev/gpiochip3", 15 }; // DT (B)
+inline constexpr GpioPin kPinSw    { "/dev/gpiochip3", 16 }; // SW (Push)
+inline constexpr GpioPin kPinBack  { "/dev/gpiochip4", 20 }; // Back Button
+
+// Lớp bọc an toàn để đọc trạng thái GPIO bằng libgpiod
+class InputPin {
 public:
-    GpioLine(const char* chip, uint32_t offset, const char* consumer = "oled_ui")
-        : chip_(chip), offset_(offset), consumer_(consumer) {}
-
-    ~GpioLine() { close(); }
-
-    GpioLine(const GpioLine&)            = delete;
-    GpioLine& operator=(const GpioLine&) = delete;
-
-    /// Open for edge-detection (both edges, pull-up).
-    bool openEdge() { return openImpl(true); }
-
-    /// Open as plain input (value reading only, no edge fd).
-    bool openValue() { return openImpl(false); }
-
-    void close() {
-        if (line_fd_ >= 0) { ::close(line_fd_); line_fd_ = -1; }
-        if (chip_fd_ >= 0) { ::close(chip_fd_); chip_fd_ = -1; }
+    explicit InputPin(const GpioPin& pin) {
+        chip_ = gpiod_chip_open(pin.chip);
+        if (!chip_) {
+            throw std::runtime_error("Failed to open gpio chip: " + std::string(pin.chip));
+        }
+        line_ = gpiod_chip_get_line(chip_, pin.line);
+        if (!line_) {
+            gpiod_chip_close(chip_);
+            throw std::runtime_error("Failed to get line offset: " + std::to_string(pin.line));
+        }
+        if (gpiod_line_request_input(line_, "mybipedal_oled_input") < 0) {
+            gpiod_line_release(line_);
+            gpiod_chip_close(chip_);
+            throw std::runtime_error("Failed to request input mode for line");
+        }
     }
 
-    [[nodiscard]] bool valid()   const { return line_fd_ >= 0; }
-    [[nodiscard]] int  fd()      const { return line_fd_; }
-
-    /// Read logical level (requires openValue or openEdge).
-    [[nodiscard]] bool getValue() const {
-        if (line_fd_ < 0) return false;
-        gpio_v2_line_values vals{};
-        vals.mask = 1;
-        if (::ioctl(line_fd_, GPIO_V2_LINE_GET_VALUES_IOCTL, &vals) < 0) return false;
-        return (vals.bits & 1u) != 0u;
+    ~InputPin() {
+        if (line_) gpiod_line_release(line_);
+        if (chip_) gpiod_chip_close(chip_);
     }
 
-    /// Consume one pending edge event; returns edge id or 0 on error.
-    [[nodiscard]] uint32_t readEvent() const {
-        gpio_v2_line_event ev{};
-        if (::read(line_fd_, &ev, sizeof(ev)) != static_cast<ssize_t>(sizeof(ev)))
-            return 0;
-        return ev.id;
+    int Read() const {
+        return gpiod_line_get_value(line_);
     }
 
 private:
-    bool openImpl(bool edges) {
-        chip_fd_ = ::open(chip_.c_str(), O_RDONLY | O_CLOEXEC);
-        if (chip_fd_ < 0) {
-            std::perror(("GpioLine::open chip " + chip_).c_str());
-            return false;
-        }
-        gpio_v2_line_request req{};
-        req.num_lines    = 1;
-        req.offsets[0]   = offset_;
-        req.config.flags = GPIO_V2_LINE_FLAG_INPUT | GPIO_V2_LINE_FLAG_BIAS_PULL_UP;
-        if (edges)
-            req.config.flags |= GPIO_V2_LINE_FLAG_EDGE_RISING
-                             |  GPIO_V2_LINE_FLAG_EDGE_FALLING;
-        std::strncpy(req.consumer, consumer_.c_str(), GPIO_MAX_NAME_SIZE - 1);
-
-        if (::ioctl(chip_fd_, GPIO_V2_GET_LINE_IOCTL, &req) < 0) {
-            std::perror(("GpioLine::open ioctl offset=" + std::to_string(offset_)).c_str());
-            ::close(chip_fd_); chip_fd_ = -1;
-            return false;
-        }
-        line_fd_ = req.fd;
-        return true;
-    }
-
-    std::string chip_, consumer_;
-    uint32_t    offset_;
-    int         chip_fd_{-1};
-    int         line_fd_{-1};
+    gpiod_chip* chip_{nullptr};
+    gpiod_line* line_{nullptr};
 };
 
 // ============================================================================
@@ -517,78 +482,77 @@ static void renderSBC(OledDriver& d, const DataSnapshot& sd) {
 // ============================================================================
 //  GPIO thread  –  encoder + buttons
 // ============================================================================
-static void gpioThread(std::atomic<bool>& running, EventQueue& eq) {
-    GpioLine enc_clk(kPinEncA.chip,   kPinEncA.offset);
-    GpioLine enc_dt (kPinEncB.chip,   kPinEncB.offset);
-    GpioLine enc_sw (kPinEncBtn.chip, kPinEncBtn.offset);
-    GpioLine back   (kPinBack.chip,   kPinBack.offset);
+void gpioThread(std::atomic<bool>& running, EventQueue& eq) {
+    std::printf("[GPIO] Thread started using libgpiod high-frequency polling.\n");
+    
+    try {
+        // Khởi tạo các chân IO
+        InputPin clk(kPinClk);
+        InputPin dt(kPinDt);
+        InputPin sw(kPinSw);
+        InputPin back(kPinBack);
 
-    if (!enc_clk.openEdge()) {
-        std::fprintf(stderr, "[GPIO] Failed to open encoder CLK\n");
-    }
-    if (!enc_dt.openValue()) {  // DT: plain input for value reading
-        std::fprintf(stderr, "[GPIO] Failed to open encoder DT\n");
-    }
-    if (!enc_sw.openEdge()) {
-        std::fprintf(stderr, "[GPIO] Failed to open encoder SW\n");
-    }
-    if (!back.openEdge()) {
-        std::fprintf(stderr, "[GPIO] Failed to open back button\n");
-    }
+        // Lưu trạng thái trước đó để bắt sườn tín hiệu (Edge change)
+        int lastClk  = clk.Read();
+        int lastSw   = sw.Read();
+        int lastBack = back.Read();
 
-    // We poll CLK, SW, Back for edge events; DT is read on-demand
-    pollfd pfds[3] = {};
-    pfds[0].fd     = enc_clk.fd();  pfds[0].events = POLLIN;
-    pfds[1].fd     = enc_sw.fd();   pfds[1].events = POLLIN;
-    pfds[2].fd     = back.fd();     pfds[2].events = POLLIN;
-
-    // Simple debounce: ignore events <5 ms after the last one
-    using Clk = std::chrono::steady_clock;
-    auto lastEnc  = Clk::now();
-    auto lastSw   = Clk::now();
-    auto lastBack = Clk::now();
-
-    while (running.load(std::memory_order_relaxed)) {
-        int ret = ::poll(pfds, 3, 100 /*ms timeout*/);
-        if (ret <= 0) continue;
-
-        auto now = Clk::now();
-
-        // Encoder CLK edge
-        if (pfds[0].revents & POLLIN) {
-            uint32_t id = enc_clk.readEvent();
-            if (id == GPIO_V2_LINE_EVENT_FALLING_EDGE &&
-                now - lastEnc > 40ms) {
-                lastEnc = now;
-                bool dt = enc_dt.getValue();
-                // DT high when CLK falls → CW, else CCW
-                eq.push(dt ? Event::ENC_CW : Event::ENC_CCW);
+        while (running) {
+            // ──────────────────────────────────────────────────────────
+            // 1. Xử lý Vặn Encoder (Bắt sườn xuống của chân CLK)
+            // ──────────────────────────────────────────────────────────
+            int currentClk = clk.Read();
+            if (currentClk != lastClk && currentClk == 0) {
+                int dtState = dt.Read();
+                
+                if (dtState != currentClk) {
+                    eq.push(Event::ENC_CW);  // Vặn theo chiều kim đồng hồ (Lên)
+                } else {
+                    eq.push(Event::ENC_CCW); // Vặn ngược chiều kim đồng hồ (Xuống)
+                }
+                
+                // Trì hoãn cực ngắn để ổn định tiếp điểm cơ học của encoder
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
-            pfds[0].revents = 0;
-        }
+            lastClk = currentClk;
 
-        // Encoder SW button
-        if (pfds[1].revents & POLLIN) {
-            uint32_t id = enc_sw.readEvent();
-            if (id == GPIO_V2_LINE_EVENT_FALLING_EDGE &&
-                now - lastSw > 50ms) {
-                lastSw = now;
-                eq.push(Event::ENC_PUSH);
+            // ──────────────────────────────────────────────────────────
+            // 2. Xử lý Nút nhấn Encoder (SW - Bắt sườn xuống khi bấm)
+            // ──────────────────────────────────────────────────────────
+            int swState = sw.Read();
+            if (swState != lastSw) {
+                if (swState == 0) { // Trạng thái nhấn xuống (LOW)
+                    eq.push(Event::ENC_PUSH);
+                    // Debounce dài hơn cho phím nhấn để tránh dội phím đôi
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                lastSw = swState;
             }
-            pfds[1].revents = 0;
-        }
 
-        // Back button
-        if (pfds[2].revents & POLLIN) {
-            uint32_t id = back.readEvent();
-            if (id == GPIO_V2_LINE_EVENT_FALLING_EDGE &&
-                now - lastBack > 50ms) {
-                lastBack = now;
-                eq.push(Event::BTN_BACK);
+            // ──────────────────────────────────────────────────────────
+            // 3. Xử lý Nút BACK (Bắt sườn xuống khi bấm nút quay lại)
+            // ──────────────────────────────────────────────────────────
+            int backState = back.Read();
+            if (backState != lastBack) {
+                if (backState == 0) { // Trạng thái nhấn xuống (LOW)
+                    eq.push(Event::BACK); // Đẩy sự kiện BACK vào hàng đợi
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                lastBack = backState;
             }
-            pfds[2].revents = 0;
+
+            // ──────────────────────────────────────────────────────────
+            // Nhịp quét chu kỳ 500 micro-giây (Tần số lấy mẫu 2KHz)
+            // ──────────────────────────────────────────────────────────
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
         }
+        
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[GPIO Thread CRITICAL ERROR]: %s\n", e.what());
+        running = false; // Hạ cờ hệ thống dừng an toàn nếu lỗi driver phần cứng
     }
+    
+    std::printf("[GPIO] Thread stopped.\n");
 }
 
 // ============================================================================
@@ -752,14 +716,19 @@ int main() {
     std::printf("[UI] Starting event loop.  Press Ctrl-C to exit.\n");
 
     while (true) {
-        // Wait up to 200 ms for an event (keeps display refreshing for
-        // live data screens like log / SBC)
-        auto ev_opt = eq.pop(200ms);
+        auto ev_opt = eq.pop(200ms); // Đợi tối đa 200ms để tối ưu tài nguyên CPU
 
         if (ev_opt) {
+            // Lưu lại trạng thái trước khi xử lý sự kiện để biết màn hình có đang ngủ không
             bool was_sleeping = (ctx.state == UIState::SLEEPING);
+
             handleEvent(*ev_opt, ctx, oled);
-            if (was_sleeping) eq.clear();
+
+            // Nếu màn hình vừa được đánh thức từ trạng thái ngủ, 
+            // lập tức dọn sạch mọi event dội nhiễu cơ học sinh ra trong tích tắc đó.
+            if (was_sleeping) {
+                eq.clear(); 
+            }
         }
 
         // ── Auto-sleep check ─────────────────────────────────────────────

@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ── Dependencies ──────────────────────────────────────────────
+find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
+pkg_check_modules(GPIOD REQUIRED libgpiod)
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "13.0")
         message(FATAL_ERROR "GCC >= 13 is required (found ${CMAKE_CXX_COMPILER_VERSION})")
@@ -22,6 +27,11 @@ add_compile_options(
 add_library(oled STATIC
     protocol/i2c.cpp
     src/oled_driver.cpp
+)
+
+target_link_libraries(oled PRIVATE 
+    gpiod 
+    Threads::Threads
 )
 
 target_include_directories(oled PUBLIC
