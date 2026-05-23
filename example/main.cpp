@@ -74,20 +74,26 @@ inline constexpr GpioPin kPinBack  { "/dev/gpiochip4", 20 }; // Back Button
 // Lớp bọc an toàn để đọc trạng thái GPIO bằng libgpiod
 class InputPin {
 public:
-    explicit InputPin(const GpioPin& pin) {
+    explicit InputPin(const GpioPin& pin)
+    {
         chip_ = gpiod_chip_open(pin.chip);
         if (!chip_) {
-            throw std::runtime_error("Failed to open gpio chip: " + std::string(pin.chip));
+            throw std::runtime_error("Failed to open chip");
         }
+
         line_ = gpiod_chip_get_line(chip_, pin.line);
         if (!line_) {
-            gpiod_chip_close(chip_);
-            throw std::runtime_error("Failed to get line offset: " + std::to_string(pin.line));
+            throw std::runtime_error("Failed to get line");
         }
-        if (gpiod_line_request_input(line_, "mybipedal_oled_input") < 0) {
-            gpiod_line_release(line_);
-            gpiod_chip_close(chip_);
-            throw std::runtime_error("Failed to request input mode for line");
+
+        // --- Cấu hình Input kèm điện trở kéo lên (Pull-up) ---
+        gpiod_line_request_config config{};
+        config.consumer = "encoder_debug";
+        config.request_type = GPIOD_LINE_REQUEST_DIRECTION_INPUT;
+        config.flags = GPIOD_LINE_REQUEST_FLAG_BIAS_PULL_UP; 
+
+        if (gpiod_line_request(line_, &config, 0) < 0) {
+            throw std::runtime_error("Failed to request input with pull-up");
         }
     }
 
