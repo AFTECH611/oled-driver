@@ -637,10 +637,8 @@ static void handleEvent(Event ev, UIContext& ctx, OledDriver& oled) {
     switch (ctx.state) {
     // ── MAIN ────────────────────────────────────────────────────────────
     case UIState::MAIN:
-        if (ev == Event::ENC_CW || ev == Event::ENC_CCW || ev == Event::ENC_PUSH)
-            ctx.state = UIState::MENU;
-        if (ev == Event::BTN_BACK)
-            ; // Already at top level
+        if (ev == Event::ENC_CW || ev == Event::ENC_CCW || ev == Event::ENC_PUSH) ctx.state = UIState::MENU;
+        if (ev == Event::BTN_BACK) {} // Already at top level
         break;
 
     // ── MENU ────────────────────────────────────────────────────────────
@@ -700,9 +698,10 @@ int main() {
     {
         std::lock_guard lock(sd.mtx);
         sd.joints = {
-            {"LHip", 0.12f, 42.1f}, {"RHip", -0.10f, 41.8f},
-            {"LKnee",0.45f, 43.0f}, {"RKnee", 0.43f, 43.2f},
-            {"LAnk",-0.08f, 39.5f}, {"RAnk", -0.07f, 39.8f},
+            {"LHR", 0.12f, 42.1f}, {"RHR", -0.10f, 41.8f},
+            {"LHP", 0.12f, 42.1f}, {"RHP", -0.10f, 41.8f},
+            {"LK",0.45f, 43.0f}, {"RK", 0.43f, 43.2f},
+            {"LAP",-0.08f, 39.5f}, {"RAP", -0.07f, 39.8f},
         };
         sd.imu_gx = 2.3f; sd.imu_gy = -1.1f; sd.imu_gz = 0.4f;
     } // <--- CLOSE THE LOCK SCOPE HERE
@@ -710,6 +709,9 @@ int main() {
     // Call pushLog outside the lock, so it can safely lock the mutex itself
     sd.pushLog("[INFO] AimRT started");
     sd.pushLog("[INFO] Robot: MyBipedal");
+    sd.pushLog("[WARN] Waiting for joint ctrl");
+    sd.pushLog("[WARN] Waiting for joint ctrl");
+    sd.pushLog("[WARN] Waiting for joint ctrl");
     sd.pushLog("[WARN] Waiting for joint ctrl");
 
     // ── Background threads ───────────────────────────────────────────────
