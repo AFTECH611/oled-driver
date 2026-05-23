@@ -528,12 +528,18 @@ void gpioThread(std::atomic<bool>& running, EventQueue& eq) {
             // ──────────────────────────────────────────────────────────
             int swState = sw.Read();
             if (swState != lastSw) {
-                if (swState == 0) { // Trạng thái nhấn xuống (LOW)
-                    eq.push(Event::ENC_PUSH);
-                    // Debounce dài hơn cho phím nhấn để tránh dội phím đôi
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                // Đợi tín hiệu ổn định (debounce cả nhấn lẫn nhả)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                
+                int confirmedState = sw.Read(); // Đọc lại để xác nhận
+                if (confirmedState == swState) {  // Trạng thái thực sự đã đổi
+                    if (confirmedState == 0) {
+                        eq.push(Event::ENC_PUSH);
+                    }
+                    // Nếu == 1 (nhả): không push, chỉ cập nhật lastSw
+                    lastSw = confirmedState;
                 }
-                lastSw = swState;
+                // Nếu confirmedState != swState: là bounce → bỏ qua, KHÔNG cập nhật lastSw
             }
 
             // ──────────────────────────────────────────────────────────
